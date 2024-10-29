@@ -1,0 +1,164 @@
+import os
+import pandas as pd
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModel, AdamW, get_linear_schedule_with_warmup
+
+# Load the CoLA dataset
+file_path = "C:\\Users\\kaang\\OneDrive\\Masaüstü\\CoLA\\train.tsv"
+cola_data = pd.read_csv(file_path, delimiter='\t', header=None, names=['source', 'label', 'x', 'text'])
+
+class MeanPoolingModel(torch.nn.Module):
+    def __init__(self, base_model):
+        super().__init__()
+        self.base_model = base_model
+        self.dropout = torch.nn.Dropout(0.1)
+        self.classifier = torch.nn.Linear(base_model.config.hidden_size, 2)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.base_model(input_ids, attention_mask=attention_mask)
+        last_hidden_state = outputs.last_hidden_state
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+        sum_embeddings = torch.sum(last_hidden_state * input_mask_expanded, 1)
+        sum_mask = input_mask_expanded.sum(1)
+        sum_mask = torch.clamp(sum_mask, min=1e-9)
+        mean_embeddings = sum_embeddings / sum_mask
+        pooled_output = self.dropout(mean_embeddings)
+        logits = self.classifier(pooled_output)
+        return torch.nn.functional.log_softmax(logits, dim=-1)
+
+# Define custom dataset class
+class CoLADataset(Dataset):
+    def __init__(self, texts, labels, tokenizer, max_len):
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text = self.texts[idx]
+        label = self.labels[idx]
+        encoding = self.tokenizer.encode_plus(
+            text,
+            add_special_tokens=True,
+            max_length=self.max_len,
+            return_token_type_ids=False,
+            padding="max_length",
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        return {
+            "text": text,
+            "input_ids": encoding["input_ids"].flatten(),
+            "attention_mask": encoding["attention_mask"].flatten(),
+            "label": torch.tensor(label, dtype=torch.long),
+        }
+
+# Define training functions
+def train_epoch(model, data_loader, optimizer, scheduler, device):
+    model = model.train()
+    for batch in data_loader:
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        labels = batch["label"].to(device)
+        optimizer.zero_grad()
+        outputs = model(input_ids, attention_mask)
+        logits = outputs
+        loss = torch.nn.functional.cross_entropy(logits, labels)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        scheduler.step()
+
+# Load tokenizer and model
+model_name = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+# Replace this line:
+# model = AutoModel.from_pretrained(model_name)
+
+# With this line:
+model = MeanPoolingModel(AutoModel.from_pretrained(model_name))
+
+# Prepare dataset and data loader
+max_len = 128
+batch_size = 16
+train_dataset = CoLADataset(cola_data["text"], cola_data["label"], tokenizer, max_len)
+train_data_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+# Prepare optimizer, scheduler, and device
+learning_rate = 1e-5
+epochs = 2
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+optimizer = AdamW(model.parameters(), lr=learning_rate)
+total_steps = len(train_data_loader) * epochs
+scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+
+model = model.to(device)
+
+# Train the model
+for epoch in range(epochs):
+    train_epoch(model, train_data_loader, optimizer, scheduler, device)
+
+import matplotlib.pyplot as plt
+
+def train_epoch(model, data_loader, optimizer, scheduler, device):
+    model = model.train()
+    epoch_loss = 0
+    num_batches = 0
+    for batch in data_loader:
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        labels = batch["label"].to(device)
+        optimizer.zero_grad()
+        outputs = model(input_ids, attention_mask)
+        logits = outputs
+        loss = torch.nn.functional.cross_entropy(logits, labels)
+        epoch_loss += loss.item()
+        num_batches += 1
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        scheduler.step()
+    return epoch_loss / num_batches
+
+training_losses = []
+
+for epoch in range(epochs):
+    epoch_loss = train_epoch(model, train_data_loader, optimizer, scheduler, device)
+    print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss:.4f}")
+    training_losses.append(epoch_loss)
+
+# Plot training losses
+plt.plot(range(1, epochs + 1), training_losses)
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.show()
+
+class MeanPoolingModel(torch.nn.Module):
+    def __init__(self, base_model):
+        super().__init__()
+        self.base_model = base_model
+        self.dropout = torch.nn.Dropout(0.1)
+        self.classifier = torch.nn.Linear(base_model.config.hidden_size, 2)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.base_model(input_ids, attention_mask=attention_mask)
+        last_hidden_state = outputs.last_hidden_state
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+        sum_embeddings = torch.sum(last_hidden_state * input_mask_expanded, 1)
+        sum_mask = input_mask_expanded.sum(1)
+        sum_mask = torch.clamp(sum_mask, min=1e-9)
+        mean_embeddings = sum_embeddings / sum_mask
+        pooled_output = self.dropout(mean_embeddings)
+        logits = self.classifier(pooled_output)
+        return torch.nn.functional.log_softmax(logits, dim=-1)
+
+model = MeanPoolingModel(AutoModel.from_pretrained(model_name))
+
+
